@@ -1,0 +1,245 @@
+-- STEP 1: Clean the user profiles
+CREATE OR REPLACE TEMP VIEW clean_user_profiles AS
+
+SELECT
+    UserID,
+    TRIM(Name) AS First_Name,
+    TRIM(Surname) AS Surname,
+    LOWER(TRIM(Gender)) AS Gender,
+    LOWER(TRIM(Race)) AS Ethnicity,
+    Age,
+    TRIM(Province) AS Region
+
+FROM brighttv.default.user_profiles;
+
+
+-- STEP 2: Clean the viewing sessions
+CREATE OR REPLACE TEMP VIEW clean_viewership AS
+
+SELECT
+    UserID0 AS Profile_UserID,
+
+    CASE
+        WHEN LOWER(TRIM(Channel2)) = 'sawsee'
+            THEN 'SawSee'
+        WHEN LOWER(TRIM(Channel2)) = 'supersport live events'
+            THEN 'SuperSport Live Events'
+        ELSE TRIM(Channel2)
+    END AS Channel,
+
+    FROM_UTC_TIMESTAMP(
+        CAST(RecordDate2 AS TIMESTAMP),
+        'Africa/Johannesburg'
+    ) AS Viewing_DateTime,
+
+    CAST(
+        COALESCE(HOUR(duration), 0) * 3600
+        + COALESCE(MINUTE(duration), 0) * 60
+        + COALESCE(TRY_CAST(DATE_FORMAT(duration, 'ss.S') AS DECIMAL(10,2)), 0)
+        AS DECIMAL(12,2)
+    ) AS Duration_Seconds
+
+FROM brighttv.default.viewership;
+
+
+-- STEP 3: Combine both datasets and create additional columns
+CREATE OR REPLACE TEMP VIEW brighttv_analysis AS
+
+SELECT
+    v.Profile_UserID,
+    p.Gender,
+    p.Ethnicity,
+    p.Age,
+
+    CASE
+        WHEN p.Age < 25 THEN 'Under 25'
+        WHEN p.Age BETWEEN 25 AND 34 THEN '25-34'
+        WHEN p.Age BETWEEN 35 AND 44 THEN '35-44'
+        WHEN p.Age BETWEEN 45 AND 54 THEN '45-54'
+        ELSE '55+'
+    END AS Age_Group,
+
+    p.Region,
+    v.Channel,
+
+    DATE(v.Viewing_DateTime) AS Watch_Date,
+    DATE_FORMAT(v.Viewing_DateTime, 'HH:mm:ss') AS Viewing_Time,
+
+    DAYOFWEEK(v.Viewing_DateTime) AS Day_Number,
+    DATE_FORMAT(v.Viewing_DateTime, 'EEEE') AS Day_Name,
+    HOUR(v.Viewing_DateTime) AS Viewing_Hour,
+
+    CASE
+        WHEN HOUR(v.Viewing_DateTime) BETWEEN 6 AND 11 THEN 'Morning'
+        WHEN HOUR(v.Viewing_DateTime) BETWEEN 12 AND 17 THEN 'Afternoon'
+        WHEN HOUR(v.Viewing_DateTime) BETWEEN 18 AND 23 THEN 'Evening'
+        ELSE 'Night'
+    END AS Time_Bucket_Classification,
+
+    v.Duration_Seconds,
+    ROUND(v.Duration_Seconds / 60, 2) AS Duration_Minutes,
+    ROUND(v.Duration_Seconds / 3600, 2) AS Duration_Hours
+
+FROM clean_viewership v
+
+LEFT JOIN clean_user_profiles p
+    ON v.Profile_UserID = p.UserID;
+
+-- Step 4: Analyse user and viewing trends 
+SELECT
+    COUNT(*) AS Total_Viewing_Sessions,
+    COUNT(DISTINCT Profile_UserID) AS Active_Viewers,
+    COUNT(DISTINCT Channel) AS Total_Channels,
+    ROUND(SUM(Duration_Minutes), 2) AS Total_Viewing_Minutes,
+    ROUND(AVG(Duration_Minutes), 2) AS Average_Session_Minutes
+
+FROM brighttv_analysis;
+
+-- Step 5: Most Popular Channels 
+SELECT
+    Channel,
+    COUNT(*) AS Total_Sessions,
+    COUNT(DISTINCT Profile_UserID) AS Unique_Viewers,
+    ROUND(SUM(Duration_Minutes), 2) AS Total_Minutes,
+    ROUND(AVG(Duration_Minutes), 2) AS Average_Minutes
+
+FROM brighttv_analysis
+
+GROUP BY Channel
+
+ORDER BY Total_Minutes DESC;
+
+-- Step 6: Viewing Behaviour by age group
+SELECT
+    Age_Group,
+    COUNT(DISTINCT Profile_UserID) AS Number_Of_Viewers,
+    COUNT(*) AS Total_Sessions,
+    ROUND(AVG(Duration_Minutes), 2) AS Average_Viewing_Time
+
+FROM brighttv_analysis
+
+GROUP BY Age_Group
+
+ORDER BY Number_Of_Viewers DESC;
+
+--Step 7: Viewing behaviour by gender
+SELECT
+    Gender,
+    COUNT(DISTINCT Profile_UserID) AS Number_Of_Viewers,
+    COUNT(*) AS Total_Sessions,
+    ROUND(SUM(Duration_Minutes), 2) AS Total_Viewing_Minutes
+
+FROM brighttv_analysis
+
+WHERE Gender IS NOT NULL
+AND Gender <> ''
+
+GROUP BY Gender;
+
+-- STEP 8: Viewing behaviour by time bucket
+
+SELECT
+    Time_Bucket_Classification,
+    COUNT(*) AS Total_Sessions,
+    ROUND(SUM(Duration_Minutes), 2) AS Total_Viewing_Minutes,
+    ROUND(SUM(Duration_Hours), 2) AS Total_Viewing_Hours
+
+FROM brighttv_analysis
+
+GROUP BY Time_Bucket_Classification
+
+ORDER BY Total_Viewing_Minutes DESC;
+
+-- Step 9: Daily viewing trends
+SELECT
+    Day_Name,
+    COUNT(*) AS Total_Viewing_Sessions,
+    ROUND(SUM(Duration_Minutes), 2)
+        AS Total_Viewing_Minutes,
+    ROUND(AVG(Duration_Minutes), 2)
+        AS Average_Session_Minutes
+
+FROM brighttv_analysis
+
+GROUP BY Day_Name
+
+ORDER BY
+    CASE Day_Name
+        WHEN 'Monday' THEN 1
+        WHEN 'Tuesday' THEN 2
+        WHEN 'Wednesday' THEN 3
+        WHEN 'Thursday' THEN 4
+        WHEN 'Friday' THEN 5
+        WHEN 'Saturday' THEN 6
+        WHEN 'Sunday' THEN 7
+    END;
+
+-- Step 10: Compare Consumption across week days 
+    SELECT
+    Day_Name,
+    COUNT(*) AS Total_Sessions,
+    ROUND(AVG(Duration_Minutes), 2) AS Average_Session_Minutes,
+    ROUND(SUM(Duration_Minutes), 2) AS Total_Viewing_Minutes
+
+FROM brighttv_analysis
+
+GROUP BY Day_Name, Day_Number
+
+ORDER BY Day_Number;
+
+-- STEP 11: Most engaged viewers
+
+SELECT
+    Profile_UserID,
+    Age_Group,
+    Region,
+    COUNT(*) AS Total_Sessions,
+    ROUND(SUM(Duration_Minutes), 2) AS Total_Viewing_Minutes,
+    ROUND(SUM(Duration_Hours), 2) AS Total_Viewing_Hours
+
+FROM brighttv_analysis
+
+GROUP BY Profile_UserID, Age_Group, Region
+
+ORDER BY Total_Viewing_Minutes DESC
+LIMIT 20
+
+-- Step 12: Check  Missing values and data quality
+SELECT
+    COUNT(*) AS Total_Records,
+
+    COUNT(Watch_Date) AS Valid_Watch_Dates,
+    COUNT(Region) AS Valid_Regions,
+    COUNT(Ethnicity) AS Valid_Ethnicities,
+    COUNT(Channel) AS Valid_Channels,
+
+    COUNT(Duration_Seconds) AS Valid_Durations,
+    COUNT(Duration_Minutes) AS Valid_Minutes,
+    COUNT(Duration_Hours) AS Valid_Hours,
+
+    COUNT(*) - COUNT(Watch_Date) AS Missing_Watch_Dates,
+    COUNT(*) - COUNT(Region) AS Missing_Regions,
+    COUNT(*) - COUNT(Ethnicity) AS Missing_Ethnicities
+
+FROM brighttv_analysis;
+
+-- Step 13 Check new time classification
+SELECT
+    Time_Bucket_Classification,
+    COUNT(*) AS Total_Sessions,
+    ROUND(SUM(Duration_Hours), 2) AS Total_Viewing_Hours
+
+FROM brighttv_analysis
+
+GROUP BY Time_Bucket_Classification
+
+ORDER BY Total_Sessions DESC;
+
+-- Step 14 Create final dashboard export 
+CREATE OR REPLACE TABLE brighttv.default.brighttv_dashboard_export AS
+SELECT *
+FROM brighttv_analysis;
+
+-- Step 15 
+SELECT *
+FROM brighttv.default.brighttv_dashboard_export;
